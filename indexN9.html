@@ -67,6 +67,11 @@
     .color-picker { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
     .color-btn { width: 32px; height: 32px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; }
     .color-btn.active { border-color: #fff; transform: scale(1.1); }
+
+    .tool-picker { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.4rem; }
+    .tool-btn { background-color: #0f172a; color: var(--text-muted); border: 1px solid var(--border-color); border-radius: 6px; padding: 0.4rem 0.2rem; font-size: 0.75rem; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.2s; }
+    .tool-btn:hover { color: var(--text-main); }
+    .tool-btn.active { color: var(--accent-blue); border-color: var(--accent-blue); background-color: rgba(56, 189, 248, 0.1); }
     
     code.inline-code { background-color: #334155; color: var(--accent-blue); padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.8rem; }
     .theory-text { font-size: 0.9rem; color: var(--text-muted); line-height: 1.7; margin-bottom: 0.75rem; }
@@ -221,12 +226,26 @@
           <div class="card">
             <div class="card-title"><span>Công Cụ Vẽ</span></div>
             <div style="margin-bottom: 0.75rem;">
+              <label style="font-size: 0.8rem; color: var(--text-muted); display: block; margin-bottom: 0.25rem;">Công cụ:</label>
+              <div class="tool-picker">
+                <button class="tool-btn active" title="Bút vẽ tự do" onclick="setTool('pen', this)">✏️ Bút</button>
+                <button class="tool-btn" title="Bấm vào vùng trống để tô màu" onclick="setTool('fill', this)">🪣 Tô màu</button>
+                <button class="tool-btn" title="Đường thẳng" onclick="setTool('line', this)">╱ Đường</button>
+                <button class="tool-btn" title="Hình chữ nhật" onclick="setTool('rect', this)">▭ Chữ nhật</button>
+                <button class="tool-btn" title="Hình tròn / elip" onclick="setTool('circle', this)">◯ Tròn</button>
+                <button class="tool-btn" title="Tam giác" onclick="setTool('triangle', this)">△ Tam giác</button>
+              </div>
+            </div>
+            <div style="margin-bottom: 0.75rem;">
               <label style="font-size: 0.8rem; color: var(--text-muted); display: block; margin-bottom: 0.25rem;">Màu sắc nét cọ:</label>
               <div class="color-picker">
                 <div class="color-btn active" style="background-color: #0f172a;" onclick="setColor('#0f172a', this)"></div>
                 <div class="color-btn" style="background-color: #ef4444;" onclick="setColor('#ef4444', this)"></div>
+                <div class="color-btn" style="background-color: #f97316;" onclick="setColor('#f97316', this)"></div>
+                <div class="color-btn" style="background-color: #eab308;" onclick="setColor('#eab308', this)"></div>
                 <div class="color-btn" style="background-color: #22c55e;" onclick="setColor('#22c55e', this)"></div>
                 <div class="color-btn" style="background-color: #38bdf8;" onclick="setColor('#38bdf8', this)"></div>
+                <div class="color-btn" style="background-color: #a855f7;" onclick="setColor('#a855f7', this)"></div>
               </div>
             </div>
             <div style="margin-bottom: 1rem;">
@@ -551,10 +570,16 @@
           if (data.sender === myId) return;
 
           if (data.type === 'draw') {
-            drawLine(data.x1, data.y1, data.x2, data.y2, data.color, data.size);
+            applyRemote(() => drawLine(data.x1, data.y1, data.x2, data.y2, data.color, data.size));
             logNet(`[${data.sender}] Vẽ nét x(${Math.round(data.x1)}->${Math.round(data.x2)})`);
+          } else if (data.type === 'fill') {
+            applyRemote(() => floodFill(data.x, data.y, data.color));
+            logNet(`[${data.sender}] Tô màu tại (${data.x}, ${data.y})`);
+          } else if (data.type === 'shape') {
+            applyRemote(() => drawShape(data.shape, data.x1, data.y1, data.x2, data.y2, data.color, data.size));
+            logNet(`[${data.sender}] Vẽ hình ${SHAPE_NAMES[data.shape] || data.shape}`);
           } else if (data.type === 'clear') {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            applyRemote(() => ctx.clearRect(0, 0, canvas.width, canvas.height));
             logNet(`[${data.sender}] Xóa sạch bảng`);
           }
         }
@@ -573,18 +598,36 @@
         clientX = e.clientX;
         clientY = e.clientY;
       }
+      // Quy đổi từ kích thước hiển thị (CSS) sang toạ độ thật của canvas (1000x600)
+      // để nét vẽ trùng vị trí chuột và đồng nhất giữa các máy có màn hình khác nhau
       return {
-        x: clientX - rect.left,
-        y: clientY - rect.top
+        x: (clientX - rect.left) * (canvas.width / rect.width),
+        y: (clientY - rect.top) * (canvas.height / rect.height)
       };
     }
 
     function startPosition(e) {
       e.preventDefault();
-      painting = true;
       const pos = getCursorPos(e);
+
+      if (currentTool === 'fill') {
+        const x = Math.floor(pos.x), y = Math.floor(pos.y);
+        floodFill(x, y, currentColor);
+        if (client.connected) {
+          client.publish(topicName, JSON.stringify({ sender: myId, type: 'fill', x, y, color: currentColor }));
+        }
+        return;
+      }
+
+      painting = true;
       lastX = pos.x;
       lastY = pos.y;
+
+      if (currentTool !== 'pen') {
+        // Lưu ảnh bảng hiện tại để vẽ xem trước hình khi kéo chuột
+        shapeStart = { x: pos.x, y: pos.y };
+        shapeSnapshot = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      }
     }
 
     function drawPosition(e) {
@@ -594,6 +637,13 @@
       const currentX = pos.x;
       const currentY = pos.y;
       const size = document.getElementById('brushSize').value;
+
+      if (shapeStart) {
+        lastX = currentX;
+        lastY = currentY;
+        drawShapePreview();
+        return;
+      }
 
       drawLine(lastX, lastY, currentX, currentY, currentColor, size);
 
@@ -616,6 +666,136 @@
     function endPosition(e) {
       if (!painting) return;
       painting = false;
+
+      if (shapeStart) {
+        const size = document.getElementById('brushSize').value;
+        const s = shapeStart;
+        ctx.putImageData(shapeSnapshot, 0, 0);
+        shapeStart = null;
+        shapeSnapshot = null;
+
+        // Bỏ qua cú click không kéo (hình quá nhỏ)
+        if (Math.abs(lastX - s.x) < 2 && Math.abs(lastY - s.y) < 2) return;
+
+        drawShape(currentTool, s.x, s.y, lastX, lastY, currentColor, size);
+        if (client.connected) {
+          client.publish(topicName, JSON.stringify({
+            sender: myId,
+            type: 'shape',
+            shape: currentTool,
+            x1: s.x, y1: s.y,
+            x2: lastX, y2: lastY,
+            color: currentColor,
+            size: size
+          }));
+        }
+      }
+    }
+
+    // --- CÔNG CỤ: TÔ MÀU & HÌNH KHỐI ---
+    let currentTool = 'pen';
+    let shapeStart = null;     // điểm bắt đầu kéo khi đang vẽ hình
+    let shapeSnapshot = null;  // ảnh bảng trước khi vẽ hình (dùng cho xem trước)
+    const SHAPE_NAMES = { line: 'đường thẳng', rect: 'chữ nhật', circle: 'tròn', triangle: 'tam giác' };
+
+    function setTool(tool, element) {
+      currentTool = tool;
+      document.querySelectorAll('.tool-btn').forEach(btn => btn.classList.remove('active'));
+      element.classList.add('active');
+      canvas.style.cursor = tool === 'fill' ? 'cell' : 'crosshair';
+    }
+
+    function drawShapePreview() {
+      const size = document.getElementById('brushSize').value;
+      ctx.putImageData(shapeSnapshot, 0, 0);
+      drawShape(currentTool, shapeStart.x, shapeStart.y, lastX, lastY, currentColor, size);
+    }
+
+    // Nét vẽ từ máy khác tới khi mình đang kéo hình: áp nét đó vào ảnh gốc
+    // rồi vẽ lại bản xem trước, để không bị bản xem trước xoá mất
+    function applyRemote(render) {
+      if (!shapeStart) { render(); return; }
+      ctx.putImageData(shapeSnapshot, 0, 0);
+      render();
+      shapeSnapshot = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      drawShapePreview();
+    }
+
+    function drawShape(shape, x1, y1, x2, y2, color, size) {
+      ctx.beginPath();
+      if (shape === 'line') {
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+      } else if (shape === 'rect') {
+        ctx.rect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+      } else if (shape === 'circle') {
+        ctx.ellipse((x1 + x2) / 2, (y1 + y2) / 2, Math.abs(x2 - x1) / 2, Math.abs(y2 - y1) / 2, 0, 0, Math.PI * 2);
+      } else if (shape === 'triangle') {
+        ctx.moveTo((x1 + x2) / 2, Math.min(y1, y2));
+        ctx.lineTo(Math.max(x1, x2), Math.max(y1, y2));
+        ctx.lineTo(Math.min(x1, x2), Math.max(y1, y2));
+        ctx.closePath();
+      }
+      ctx.strokeStyle = color;
+      ctx.lineWidth = size;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+    }
+
+    function hexToRgba(hex) {
+      const n = parseInt(hex.slice(1), 16);
+      return [(n >> 16) & 255, (n >> 8) & 255, n & 255, 255];
+    }
+
+    // Tô loang (flood fill) theo dòng quét: đổi màu toàn bộ vùng liền kề cùng màu với điểm bấm
+    function floodFill(startX, startY, color) {
+      const w = canvas.width, h = canvas.height;
+      if (startX < 0 || startY < 0 || startX >= w || startY >= h) return;
+
+      const img = ctx.getImageData(0, 0, w, h);
+      const d = img.data;
+      const [fr, fg, fb, fa] = hexToRgba(color);
+      const i0 = (startY * w + startX) * 4;
+      const tr = d[i0], tg = d[i0 + 1], tb = d[i0 + 2], ta = d[i0 + 3];
+      if (tr === fr && tg === fg && tb === fb && ta === fa) return;
+
+      // Dung sai cho phép để tô cả phần viền mờ (khử răng cưa) sát nét vẽ
+      const TOL = 96;
+      const visited = new Uint8Array(w * h);
+      const matches = (p) => {
+        const i = p * 4;
+        return !visited[p] &&
+          Math.abs(d[i] - tr) + Math.abs(d[i + 1] - tg) + Math.abs(d[i + 2] - tb) + Math.abs(d[i + 3] - ta) <= TOL;
+      };
+
+      const stack = [startY * w + startX];
+      while (stack.length) {
+        const p = stack.pop();
+        const y = Math.floor(p / w);
+        let x = p - y * w;
+        while (x > 0 && matches(y * w + x - 1)) x--;
+
+        let spanUp = false, spanDown = false;
+        for (; x < w && matches(y * w + x); x++) {
+          const q = y * w + x;
+          visited[q] = 1;
+          const i = q * 4;
+          d[i] = fr; d[i + 1] = fg; d[i + 2] = fb; d[i + 3] = fa;
+
+          if (y > 0) {
+            const up = matches(q - w);
+            if (up && !spanUp) stack.push(q - w);
+            spanUp = up;
+          }
+          if (y < h - 1) {
+            const down = matches(q + w);
+            if (down && !spanDown) stack.push(q + w);
+            spanDown = down;
+          }
+        }
+      }
+      ctx.putImageData(img, 0, 0);
     }
 
     canvas.addEventListener('mousedown', startPosition);
